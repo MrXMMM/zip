@@ -11,6 +11,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"unicode/utf8"
 )
 
 // TODO(adg): support zip file comments
@@ -211,6 +212,12 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 	}
 
 	fh.Flags |= 0x8 // we will write a data descriptor
+
+	utf8Valid, utf8Require := detectUTF8(fh.Name)
+	if utf8Valid && utf8Require {
+		fh.Flags |= 0x800 // set utf 8
+	}
+
 	// TODO(alex): Look at spec and see if these need to be changed
 	// when using encryption.
 	fh.CreatorVersion = fh.CreatorVersion&0xff00 | zipVersion20 // preserve compatibility byte
@@ -411,4 +418,24 @@ func (b *writeBuf) uint32(v uint32) {
 func (b *writeBuf) uint64(v uint64) {
 	binary.LittleEndian.PutUint64(*b, v)
 	*b = (*b)[8:]
+}
+
+func detectUTF8(s string) (valid, require bool) {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		// Officially, ZIP uses CP-437, but many readers use the system's
+		// local character encoding. Most encoding are compatible with a large
+		// subset of CP-437, which itself is ASCII-like.
+		//
+		// Forbid 0x7e and 0x5c since EUC-KR and Shift-JIS replace those
+		// characters with localized currency and overline characters.
+		if r < 0x20 || r > 0x7d || r == 0x5c {
+			if !utf8.ValidRune(r) || (r == utf8.RuneError && size == 1) {
+				return false, false
+			}
+			require = true
+		}
+	}
+	return true, require
 }
